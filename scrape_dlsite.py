@@ -14,7 +14,10 @@ data/sales_log.csv に1行ずつ追記するスクリプト。
   販売数を引いた値。前回実行時のデータが無い(初回)場合は、当日の販売数を
   そのまま採用する。
 
-- 何か1件でも取得に失敗した場合、notify_config.yaml に設定した
+- サーバー混雑等で一時的に取得に失敗した場合、60秒待って1回だけ再試行する。
+  再試行しても失敗した場合のみ、その対象を最終的な失敗として扱う。
+
+- 何か1件でも(再試行後も)取得に失敗した場合、notify_config.yaml に設定した
   Discord Webhookへ通知を送る(未設定なら通知はスキップする)。
 
 使い方:
@@ -44,6 +47,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+RETRY_COUNT = 1  # 初回失敗後、あと何回再試行するか
+RETRY_WAIT_SECONDS = 60  # 再試行までの待機秒数
 
 FIELDNAMES = [
     "timestamp",
@@ -197,6 +203,45 @@ def fetch_rendered_html(page, url: str) -> str:
     return page.content()
 
 
+def fetch_and_parse_with_retry(page, url: str, title: str) -> dict:
+    """
+    取得+パースを行い、失敗した場合は RETRY_WAIT_SECONDS 秒待って
+    RETRY_COUNT 回まで再試行する。
+    最終的に失敗した場合は、原因調査用にその時点のHTMLを保存したうえで
+    例外を送出する。
+    """
+    last_exc = None
+    last_html = None
+
+    for attempt in range(1, RETRY_COUNT + 2):  # 初回 + 再試行RETRY_COUNT回
+        html = None
+        try:
+            html = fetch_rendered_html(page, url)
+            return parse(html)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            last_html = html
+            is_last_attempt = attempt == RETRY_COUNT + 1
+            if is_last_attempt:
+                break
+            print(
+                f"[WARN] {title}: 取得に失敗({exc})。{RETRY_WAIT_SECONDS}秒待って再試行します"
+                f"(試行 {attempt}/{RETRY_COUNT + 1})",
+                file=sys.stderr,
+            )
+            time.sleep(RETRY_WAIT_SECONDS)
+
+    if last_html is not None:
+        fail_path = os.path.join(
+            BASE_DIR, f"debug_failed_{extract_product_id(url) or 'unknown'}.html"
+        )
+        with open(fail_path, "w", encoding="utf-8") as f:
+            f.write(last_html)
+        print(f"[INFO] 失敗時のHTMLを {fail_path} に保存しました", file=sys.stderr)
+
+    raise last_exc
+
+
 def run() -> bool:
     """スクレイピング本体。全件成功した場合Trueを返す。"""
     targets = load_targets()
@@ -224,17 +269,7 @@ def run() -> bool:
             url = target["url"]
             tags = ";".join(target.get("tags", []) or [])
             try:
-                html = fetch_rendered_html(page, url)
-                try:
-                    data = parse(html)
-                except Exception:
-                    fail_path = os.path.join(
-                        BASE_DIR, f"debug_failed_{extract_product_id(url) or 'unknown'}.html"
-                    )
-                    with open(fail_path, "w", encoding="utf-8") as f:
-                        f.write(html)
-                    print(f"[INFO] 失敗時のHTMLを {fail_path} に保存しました", file=sys.stderr)
-                    raise
+                data = fetch_and_parse_with_retry(page, url, title)
 
                 prev = price_state.get(title)
 
@@ -276,7 +311,7 @@ def run() -> bool:
 
                 print(f"[OK] {title}: {row}")
             except Exception as exc:  # noqa: BLE001
-                msg = f"{title}: {exc}"
+                msg = f"{title}: {exc}(再試行後も失敗)"
                 error_messages.append(msg)
                 print(f"[ERROR] {msg}", file=sys.stderr)
 
