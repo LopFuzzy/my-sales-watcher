@@ -1,0 +1,14 @@
+# 定点観測の対象を列挙する設定ファイル。
+# title: 記録上の表示名(自由に命名してOK。同じtitleは同一系列として集計されます)
+# url:   DLsiteの商品ページURL
+# tags:  任意。分類・グルーピング用のラベル(複数可)。使わない場合は [] のままでOK。
+
+targets:
+  - title: "作品A"
+    url: "https://www.dlsite.com/maniax/work/=/product_id/RJ01669480.html"
+    tags: []
+
+  # 対象を増やす場合は、この形式でリストに追加してください。
+  # - title: "作品B"
+  #   url: "https://www.dlsite.com/maniax/work/=/product_id/RJ01234567.html"
+  #   tags: ["シリーズX", "2026年発売"]
